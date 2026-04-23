@@ -4212,182 +4212,187 @@ SET ANSI_NULLS ON
 GO
 SET QUOTED_IDENTIFIER ON
 GO
+    
+     
+CREATE PROCEDURE [dbo].[webDQTables_DataSet_Completeness_GenerateAttributeLevelReport]    
+    @Dataset NVARCHAR(100)    
+AS    
+BEGIN    
+    SET NOCOUNT ON;    
+     
+    -- Declare variables    
+ --declare @Dataset nvarchar(200)='IV_CSM_201_Customer_Address'    
+    DECLARE @ResultTable NVARCHAR(128) = QUOTENAME(@Dataset + 'Completeness_RecordLevelResult');    
+    DECLARE @SummaryTable NVARCHAR(128) = QUOTENAME(@Dataset + 'Completeness_AttributeLevelResult');    
+    DECLARE @KeyFields TABLE (FieldOrder INT, FieldName NVARCHAR(100));    
+    DECLARE @ActiveFields TABLE (FieldOrder INT, FieldName NVARCHAR(100));    
+    DECLARE @AdditionalFields TABLE (FieldOrder INT, FieldName NVARCHAR(100), [Key] INT);    
+    DECLARE @KeyFieldList NVARCHAR(MAX);    
+    DECLARE @KeyFieldListForSelect NVARCHAR(MAX);    
+    DECLARE @KeyFieldListForConcat NVARCHAR(MAX);    
+    DECLARE @AdditionalFieldList NVARCHAR(MAX);    
+    DECLARE @AdditionalFieldListForSelect NVARCHAR(MAX);    
+    DECLARE @SQL NVARCHAR(MAX);    
+    DECLARE @FieldValuesList NVARCHAR(MAX);    
+    DECLARE @DatasetSafe NVARCHAR(128) = REPLACE(REPLACE(@ResultTable, '[', ''), ']', '');    
+    DECLARE @SegmentField NVARCHAR(100);    
+ DECLARE @sqlsegment NVARCHAR(MAX)  
+     
+    -- Step 1: Retrieve Key Fields from DQTableFields    
+    INSERT INTO @KeyFields (FieldOrder, FieldName)    
+    SELECT [Order], Field    
+    FROM DQTableFields    
+    WHERE Dataset = @Dataset AND [Key] = 1    
+    ORDER BY [Order];    
+     
+    -- Validate presence of key fields    
+    IF NOT EXISTS (SELECT 1 FROM @KeyFields)    
+    BEGIN    
+        RAISERROR('No key fields defined for dataset %s in DQTableFields.', 16, 1, @Dataset);    
+        RETURN;    
+    END    
+     
+    -- Step 1b: Retrieve SegmentField from DQTables    
+    SELECT @SegmentField = ConditionFieldInDataSet    
+    FROM DQTables    
+    WHERE Dataset = @Dataset;    
+     
+    -- Step 2: Retrieve Active Fields (excluding key fields)    
+    INSERT INTO @ActiveFields (FieldOrder, FieldName)    
+    SELECT [Order], Field    
+    FROM DQTableFields    
+    WHERE Dataset = @Dataset AND Active = 1 AND ([Key] <> 1 OR [Key] IS NULL)     
+ --AND ConditionBySegment = 1    
+ AND (ConditionBySegment = 1 or Mandatory=1) --Changed on 20250114 by GK because reports with mandatory marked without conditions for segment were raising an error    
+    ORDER BY [Order];    
+     
+    -- Validate presence of active fields    
+    IF NOT EXISTS (SELECT 1 FROM @ActiveFields)    
+    BEGIN    
+        RAISERROR('No active fields defined for dataset %s in DQTableFields.', 16, 1, @Dataset);    
+        RETURN;    
+    END    
+     
+    -- Step 2b: Retrieve Additional Fields to Display (Optional)    
+    -- Include SegmentField in additional fields if not already included    
+    INSERT INTO @AdditionalFields (FieldOrder, FieldName, [Key])    
+    SELECT [Order], Field, [Key]    
+    FROM DQTableFields    
+    WHERE Dataset = @Dataset AND ([Key] <> 1 OR [Key] IS NULL) AND  (Field = @SegmentField or ReportDisplay=1)     --Changed on 20260422 by ABA adding filter to exclude Key fields
+  ORDER BY [Order];   
+
+    -- Ensure @SegmentField is included in @AdditionalFields    --Changed on 20260422 by ABA adding filter not to insert when Key field is segment field
+    IF @SegmentField IS NOT NULL AND NOT EXISTS (SELECT 1 FROM @AdditionalFields WHERE FieldName = @SegmentField ) AND NOT EXISTS (SELECT 1 FROM @KeyFields WHERE FieldName = @SegmentField ) 
+    BEGIN    
+        INSERT INTO @AdditionalFields (FieldOrder, FieldName)    
+        SELECT 9999, @SegmentField;    
+  print('He entrat al IF')
+    END    
+ select 'Additional fields',* from @AdditionalFields    
+    -- Build Key Field Lists for SQL    
+    SELECT @KeyFieldList = STRING_AGG(QUOTENAME(FieldName) + ' NVARCHAR(100)', ', ') WITHIN GROUP (ORDER BY FieldOrder)    
+    FROM @KeyFields;  
   
-  
-CREATE PROCEDURE [dbo].[webDQTables_DataSet_Completeness_GenerateAttributeLevelReport]  
-    @Dataset NVARCHAR(100)  
-AS  
-BEGIN  
-    SET NOCOUNT ON;  
-   
-    -- Declare variables  
- --declare @Dataset nvarchar(200)='IV_CSM_201_Customer_Address'  
-    DECLARE @ResultTable NVARCHAR(128) = QUOTENAME(@Dataset + 'Completeness_RecordLevelResult');  
-    DECLARE @SummaryTable NVARCHAR(128) = QUOTENAME(@Dataset + 'Completeness_AttributeLevelResult');  
-    DECLARE @KeyFields TABLE (FieldOrder INT, FieldName NVARCHAR(100));  
-    DECLARE @ActiveFields TABLE (FieldOrder INT, FieldName NVARCHAR(100));  
-    DECLARE @AdditionalFields TABLE (FieldOrder INT, FieldName NVARCHAR(100));  
-    DECLARE @KeyFieldList NVARCHAR(MAX);  
-    DECLARE @KeyFieldListForSelect NVARCHAR(MAX);  
-    DECLARE @KeyFieldListForConcat NVARCHAR(MAX);  
-    DECLARE @AdditionalFieldList NVARCHAR(MAX);  
-    DECLARE @AdditionalFieldListForSelect NVARCHAR(MAX);  
-    DECLARE @SQL NVARCHAR(MAX);  
-    DECLARE @FieldValuesList NVARCHAR(MAX);  
-    DECLARE @DatasetSafe NVARCHAR(128) = REPLACE(REPLACE(@ResultTable, '[', ''), ']', '');  
-    DECLARE @SegmentField NVARCHAR(100);  
-	DECLARE @sqlsegment NVARCHAR(MAX)
-   
-    -- Step 1: Retrieve Key Fields from DQTableFields  
-    INSERT INTO @KeyFields (FieldOrder, FieldName)  
-    SELECT [Order], Field  
-    FROM DQTableFields  
-    WHERE Dataset = @Dataset AND [Key] = 1  
-    ORDER BY [Order];  
-   
-    -- Validate presence of key fields  
-    IF NOT EXISTS (SELECT 1 FROM @KeyFields)  
-    BEGIN  
-        RAISERROR('No key fields defined for dataset %s in DQTableFields.', 16, 1, @Dataset);  
-        RETURN;  
-    END  
-   
-    -- Step 1b: Retrieve SegmentField from DQTables  
-    SELECT @SegmentField = ConditionFieldInDataSet  
-    FROM DQTables  
-    WHERE Dataset = @Dataset;  
-   
-    -- Step 2: Retrieve Active Fields (excluding key fields)  
-    INSERT INTO @ActiveFields (FieldOrder, FieldName)  
-    SELECT [Order], Field  
-    FROM DQTableFields  
-    WHERE Dataset = @Dataset AND Active = 1 AND ([Key] <> 1 OR [Key] IS NULL)   
- --AND ConditionBySegment = 1  
- AND (ConditionBySegment = 1 or Mandatory=1) --Changed on 20250114 by GK because reports with mandatory marked without conditions for segment were raising an error  
-    ORDER BY [Order];  
-   
-    -- Validate presence of active fields  
-    IF NOT EXISTS (SELECT 1 FROM @ActiveFields)  
-    BEGIN  
-        RAISERROR('No active fields defined for dataset %s in DQTableFields.', 16, 1, @Dataset);  
-        RETURN;  
-    END  
-   
-    -- Step 2b: Retrieve Additional Fields to Display (Optional)  
-    -- Include SegmentField in additional fields if not already included  
-    INSERT INTO @AdditionalFields (FieldOrder, FieldName)  
-    SELECT [Order], Field  
-    FROM DQTableFields  
-    WHERE Dataset = @Dataset AND (Field = @SegmentField or ReportDisplay=1);  
-   
-    -- Ensure @SegmentField is included in @AdditionalFields  
-    IF @SegmentField IS NOT NULL AND NOT EXISTS (SELECT 1 FROM @AdditionalFields WHERE FieldName = @SegmentField)  
-    BEGIN  
-        INSERT INTO @AdditionalFields (FieldOrder, FieldName)  
-        SELECT 9999, @SegmentField;  
-    END  
- select 'Additional fields',* from @AdditionalFields  
-    -- Build Key Field Lists for SQL  
-    SELECT @KeyFieldList = STRING_AGG(QUOTENAME(FieldName) + ' NVARCHAR(100)', ', ') WITHIN GROUP (ORDER BY FieldOrder)  
+    SELECT @KeyFieldListForSelect = STRING_AGG('R.' + QUOTENAME(FieldName), ', ') WITHIN GROUP (ORDER BY FieldOrder)    
     FROM @KeyFields;  
-   
-    SELECT @KeyFieldListForSelect = STRING_AGG('R.' + QUOTENAME(FieldName), ', ') WITHIN GROUP (ORDER BY FieldOrder)  
-    FROM @KeyFields;  
-   
-    SELECT @KeyFieldListForConcat = STRING_AGG('R.' + QUOTENAME(FieldName), ' + ''_'' + ') WITHIN GROUP (ORDER BY FieldOrder)  
-    FROM @KeyFields;  
-   
-    -- Build Additional Field Lists for SQL  
-    SELECT @AdditionalFieldList = STRING_AGG(QUOTENAME(FieldName) + ' NVARCHAR(100)', ', ') WITHIN GROUP (ORDER BY FieldOrder)  
+     
+    SELECT @KeyFieldListForConcat = STRING_AGG('R.' + QUOTENAME(FieldName), ' + ''_'' + ') WITHIN GROUP (ORDER BY FieldOrder)    
+    FROM @KeyFields;    
+      
+     
+    -- Build Additional Field Lists for SQL    
+    SELECT @AdditionalFieldList = STRING_AGG(QUOTENAME(FieldName) + ' NVARCHAR(100)', ', ') WITHIN GROUP (ORDER BY FieldOrder)    
     FROM @AdditionalFields;  
+          
+    SELECT @AdditionalFieldListForSelect = STRING_AGG('R.' + QUOTENAME(FieldName), ', ') WITHIN GROUP (ORDER BY FieldOrder)    
+    FROM @AdditionalFields;   
+     
+    -- Step 3: Build FieldValuesList for CROSS APPLY    
+    SELECT @FieldValuesList = STRING_AGG(    
+        '(''' + FieldName + ''', R.' + QUOTENAME(FieldName) + ', R.' + QUOTENAME(FieldName + '_Incomplete') + ')', ', '    
+    )    
+    FROM @ActiveFields;    
    
-    SELECT @AdditionalFieldListForSelect = STRING_AGG('R.' + QUOTENAME(FieldName), ', ') WITHIN GROUP (ORDER BY FieldOrder)  
-    FROM @AdditionalFields;  
-   
-    -- Step 3: Build FieldValuesList for CROSS APPLY  
-    SELECT @FieldValuesList = STRING_AGG(  
-        '(''' + FieldName + ''', R.' + QUOTENAME(FieldName) + ', R.' + QUOTENAME(FieldName + '_Incomplete') + ')', ', '  
-    )  
-    FROM @ActiveFields;  
-   
-    -- Step 4: Create the Summary Table  
-    IF OBJECT_ID(@SummaryTable, 'U') IS NOT NULL  
-    BEGIN  
-        SET @SQL = 'DROP TABLE ' + @SummaryTable + ';';  
-        EXEC sp_executesql @SQL;  
-    END  
-   
-    -- Construct the CREATE TABLE statement dynamically  
-    SET @SQL = 'CREATE TABLE ' + @SummaryTable + ' (  
-        DATASET NVARCHAR(100),  
-        [KEY] NVARCHAR(500),  
-        ' + @KeyFieldList + ', ';  
-   
-    IF @AdditionalFieldList IS NOT NULL AND LEN(@AdditionalFieldList) > 0  
-    BEGIN  
-        SET @SQL = @SQL + @AdditionalFieldList + ', ';  
-    END  
-   
-   /* Segment field is created because the script was giving an error when there was no segment field and only mandatory fields so it was not inserting in the attribute table */
-   /* INSERTED THIS SEGMENT ON 20250120 */
-	IF @SegmentField IS NULL
-	BEGIN
-		SET @SQLSEGMENT = 'CASE WHEN FieldValues.IncompleteStatus = ''Yes'' THEN CONCAT(FieldValues.Field, '' is a Mandatory field'') ELSE '''' END AS ZCOMMENT  '
-	END
-
-	IF @SegmentField IS NOT NULL
-	BEGIN
-		SET @SQLSEGMENT = 'CASE WHEN FieldValues.IncompleteStatus = ''Yes'' THEN CONCAT(FieldValues.Field, '' is a Mandatory field for '', R.' + QUOTENAME(ISNULL(@SegmentField, '')) + ') ELSE '''' END AS ZCOMMENT  '
-	END
-	/* INSERTED THIS SEGMENT ON 20250120 */
-
-
-    SET @SQL = @SQL + '  
-        FIELD NVARCHAR(100),  
-        FIELD_VALUE NVARCHAR(MAX),  
-        ZERROR BIT,  
-        ZCOMMENT NVARCHAR(500)  
-    );';  
- print(@SQL)  
-   
-    EXEC sp_executesql @SQL;  
- print('Keylist ---------'+@AdditionalFieldListForSelect)  
-    -- Step 5: Insert Data into the Summary Table  
-    SET @SQL = '  
-    INSERT INTO ' + @SummaryTable + ' (DATASET, [KEY], ' + @KeyFieldListForSelect +   
-        CASE WHEN @AdditionalFieldListForSelect IS NOT NULL AND LEN(@AdditionalFieldListForSelect) > 0 THEN ', ' + @AdditionalFieldListForSelect ELSE '' END + ', FIELD, FIELD_VALUE, ZERROR, ZCOMMENT)  
-    SELECT   
-        ''' + @Dataset + ''' AS DATASET,  
-        ' + @KeyFieldListForConcat + ' AS [KEY],  
-        ' + REPLACE(@KeyFieldListForSelect, 'R.', '') +   
-        CASE WHEN @AdditionalFieldListForSelect IS NOT NULL AND LEN(@AdditionalFieldListForSelect) > 0 THEN ', ' + REPLACE(@AdditionalFieldListForSelect, 'R.', '') ELSE '' END + ',  
-        FieldValues.Field,  
-        FieldValues.Field_Value,  
-        CASE WHEN FieldValues.IncompleteStatus = ''Yes'' THEN 1 ELSE 0 END AS ZERROR, '
-		+ @sqlsegment /*LOOK COMMENT ABOUT SEGMENT FIELD CONDITION ABOVE; CHANGE MADE ON 20250120 */ +' 
-        FROM   
-        ' + @ResultTable + ' R  
-    CROSS APPLY  
-    (  
-        SELECT   
-            v.Field,  
-            v.Field_Value,  
-            v.IncompleteStatus  
-        FROM   
-            (VALUES  
-                ' + @FieldValuesList + '  
-            ) AS v(Field, Field_Value, IncompleteStatus)  
-    ) AS FieldValues  
-    ;';  
- print(@sql)  
-    EXEC sp_executesql @SQL;  
+    -- Step 4: Create the Summary Table    
+    IF OBJECT_ID(@SummaryTable, 'U') IS NOT NULL    
+    BEGIN    
+        SET @SQL = 'DROP TABLE ' + @SummaryTable + ';';    
+        EXEC sp_executesql @SQL;    
+    END    
+     
+    -- Construct the CREATE TABLE statement dynamically    
+    SET @SQL = 'CREATE TABLE ' + @SummaryTable + ' (    
+        DATASET NVARCHAR(100),    
+        [KEY] NVARCHAR(500),    
+        ' + @KeyFieldList + ', ';    
+     
+    IF @AdditionalFieldList IS NOT NULL AND LEN(@AdditionalFieldList) > 0    
+    BEGIN    
+        SET @SQL = @SQL + @AdditionalFieldList + ', ';    
+    END    
+     
+   /* Segment field is created because the script was giving an error when there was no segment field and only mandatory fields so it was not inserting in the attribute table */  
+   /* INSERTED THIS SEGMENT ON 20250120 */  
+ IF @SegmentField IS NULL  
+ BEGIN  
+  SET @SQLSEGMENT = 'CASE WHEN FieldValues.IncompleteStatus = ''Yes'' THEN CONCAT(FieldValues.Field, '' is a Mandatory field'') ELSE '''' END AS ZCOMMENT  '  
+ END  
   
- SET @SQL = ' ALTER TABLE ' + @SummaryTable + ' REBUILD PARTITION = ALL WITH (DATA_COMPRESSION = ROW)';  
- exec sp_executesql @SQL;  
+ IF @SegmentField IS NOT NULL  
+ BEGIN  
+  SET @SQLSEGMENT = 'CASE WHEN FieldValues.IncompleteStatus = ''Yes'' THEN CONCAT(FieldValues.Field, '' is a Mandatory field for '', R.' + QUOTENAME(ISNULL(@SegmentField, '')) + ') ELSE '''' END AS ZCOMMENT  '  
+ END  
+ /* INSERTED THIS SEGMENT ON 20250120 */  
   
-    -- Optional: Provide feedback upon successful completion  
-    PRINT 'Attribute-level summary table ' + @SummaryTable + ' has been created successfully.';  
-END  
+  
+    SET @SQL = @SQL + '    
+        FIELD NVARCHAR(100),    
+        FIELD_VALUE NVARCHAR(MAX),    
+        ZERROR BIT,    
+        ZCOMMENT NVARCHAR(500)    
+    );';    
+ print(@SQL)    
+     
+    EXEC sp_executesql @SQL;    
+ print('Keylist ---------'+@AdditionalFieldListForSelect)    
+    -- Step 5: Insert Data into the Summary Table    
+    SET @SQL = '    
+    INSERT INTO ' + @SummaryTable + ' (DATASET, [KEY], ' + @KeyFieldListForSelect +     
+        CASE WHEN @AdditionalFieldListForSelect IS NOT NULL AND LEN(@AdditionalFieldListForSelect) > 0 THEN ', ' + @AdditionalFieldListForSelect ELSE '' END + ', FIELD, FIELD_VALUE, ZERROR, ZCOMMENT)    
+    SELECT     
+        ''' + @Dataset + ''' AS DATASET,    
+        ' + @KeyFieldListForConcat + ' AS [KEY],    
+        ' + REPLACE(@KeyFieldListForSelect, 'R.', '') +     
+        CASE WHEN @AdditionalFieldListForSelect IS NOT NULL AND LEN(@AdditionalFieldListForSelect) > 0 THEN ', ' + REPLACE(@AdditionalFieldListForSelect, 'R.', '') ELSE '' END + ',    
+        FieldValues.Field,    
+        FieldValues.Field_Value,    
+        CASE WHEN FieldValues.IncompleteStatus = ''Yes'' THEN 1 ELSE 0 END AS ZERROR, '  
+  + @sqlsegment /*LOOK COMMENT ABOUT SEGMENT FIELD CONDITION ABOVE; CHANGE MADE ON 20250120 */ +'   
+        FROM     
+        ' + @ResultTable + ' R    
+    CROSS APPLY    
+    (    
+        SELECT     
+            v.Field,    
+            v.Field_Value,    
+            v.IncompleteStatus    
+        FROM     
+            (VALUES    
+                ' + @FieldValuesList + '    
+            ) AS v(Field, Field_Value, IncompleteStatus)    
+    ) AS FieldValues    
+    ;';    
+ print(@sql)    
+    EXEC sp_executesql @SQL;    
+    
+ SET @SQL = ' ALTER TABLE ' + @SummaryTable + ' REBUILD PARTITION = ALL WITH (DATA_COMPRESSION = ROW)';    
+ exec sp_executesql @SQL;    
+    
+    -- Optional: Provide feedback upon successful completion    
+    PRINT 'Attribute-level summary table ' + @SummaryTable + ' has been created successfully.';    
+END    
+    
+ 
   
 GO
 /****** Object:  StoredProcedure [dbo].[webDQTables_DataSet_Completeness_GenerateRecordLevelResultTable]    Script Date: 2/12/2026 5:22:40 PM ******/
